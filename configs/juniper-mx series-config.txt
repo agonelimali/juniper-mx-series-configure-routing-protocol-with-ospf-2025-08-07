@@ -1,0 +1,238 @@
+=== NETWORK ARCHITECTURE OVERVIEW ===
+
+Network Architecture Requirements:
+- Core Juniper device acting as enterprise distribution/core switch and router
+- OSPFv2 as the primary IGP for dynamic routing between internal VLANs and uplinks
+- Secure management access (SSH, AAA, RBAC, encrypted credentials)
+- Segmented VLANs for users, servers, management, and DMZ
+- Strict security policies between zones (user, server, management, DMZ, internet)
+- Compliance with enterprise password, logging, and monitoring standards
+- High availability, configuration backup, and robust monitoring (SNMP, syslog)
+- Optimized spanning tree and interface security for switching reliability
+
+=== DEVICE 1: JUNIPER-CORE ===
+
+! ===== SECTION: Basic Device Configuration =====
+
+set system host-name JUNIPER-CORE
+set system domain-name enterprise.local
+set system root-authentication encrypted-password "$6$abc1234567890$abcdefghijklmnopqrstuvwx"
+set system login user netadmin class super-user authentication encrypted-password "$6$def4567890$zyxwvutsrqponmlkjihgfedcba"
+set system login user ops class operator authentication encrypted-password "$6$ghi7890123$lkjhgfdsaqwertyuiopmnbvcxz"
+set system login user audit class read-only authentication encrypted-password "$6$jkl0123456$poiuytrewqlkjhgfdsamnbvcxz"
+set system services ssh root-login deny
+set system services ssh protocol-version v2
+set system services ssh ciphers aes256-ctr
+set system services ssh macs hmac-sha2-256
+set system services ssh connection-limit 10
+set system services ssh rate-limit 5
+set system services netconf ssh
+set system services web-management https system-generated-certificate
+set system services web-management https interface lo0.0
+set system services web-management session idle-timeout 10
+set system services web-management session maximum 3
+set system ntp server 192.0.2.10 prefer
+set system ntp server 192.0.2.11
+set system ntp boot-server 192.0.2.10
+set system time-zone UTC
+set system name-server 8.8.8.8
+set system name-server 8.8.4.4
+set system syslog user * any emergency
+set system syslog file messages any notice
+set system syslog file messages authorization info
+set system syslog file interactive-commands interactive-commands any
+set system syslog file security log info
+set system syslog file config-changes change
+set system syslog host 192.0.2.100 any info
+set system syslog host 192.0.2.101 authorization info
+set system archival configuration transfer-on-commit
+set system archival configuration archive-sites "scp://backupuser@192.0.2.200:/configs/"
+set system archival configuration maximum 10
+set system login retry-options tries-before-disconnect 3
+set system login retry-options backoff-threshold 3
+set system login retry-options backoff-factor 3
+set system login retry-options lockout-period 300
+set system login class super-user permissions all
+set system login class operator permissions view-configuration clear system
+set system login class read-only permissions view-configuration
+
+! ===== END SECTION =====
+
+! ===== SECTION: Security Hardening =====
+
+set security zones security-zone trust interfaces vlan.10 host-inbound-traffic system-services all
+set security zones security-zone trust interfaces vlan.20 host-inbound-traffic system-services ping
+set security zones security-zone trust interfaces vlan.30 host-inbound-traffic system-services ssh
+set security zones security-zone trust interfaces vlan.40 host-inbound-traffic system-services ping
+set security zones security-zone management interfaces vlan.99 host-inbound-traffic system-services ssh
+set security zones security-zone management interfaces vlan.99 host-inbound-traffic system-services https
+set security zones security-zone management interfaces vlan.99 host-inbound-traffic system-services snmp
+set security zones security-zone management interfaces vlan.99 host-inbound-traffic system-services ntp
+set security zones security-zone management interfaces vlan.99 host-inbound-traffic system-services ping
+set security zones security-zone dmz interfaces vlan.50 host-inbound-traffic system-services ping
+set security zones security-zone dmz interfaces vlan.50 host-inbound-traffic system-services ssh
+set security zones security-zone untrust interfaces ge-0/0/0.0 host-inbound-traffic system-services none
+set security zones security-zone untrust interfaces ge-0/0/0.0 host-inbound-traffic protocols none
+set security zones security-zone trust address-book address USER_NET 10.10.10.0/24
+set security zones security-zone trust address-book address SERVER_NET 10.10.20.0/24
+set security zones security-zone dmz address-book address DMZ_NET 10.10.50.0/24
+set security zones security-zone management address-book address MGMT_NET 10.10.99.0/24
+set security zones security-zone untrust address-book address INTERNET 0.0.0.0/0
+set security policies from-zone trust to-zone dmz policy allow-trust-to-dmz match source-address USER_NET destination-address DMZ_NET application any
+set security policies from-zone trust to-zone dmz policy allow-trust-to-dmz then permit
+set security policies from-zone trust to-zone management policy allow-trust-to-mgmt match source-address USER_NET destination-address MGMT_NET application any
+set security policies from-zone trust to-zone management policy allow-trust-to-mgmt then permit
+set security policies from-zone dmz to-zone trust policy allow-dmz-to-trust match source-address DMZ_NET destination-address USER_NET application any
+set security policies from-zone dmz to-zone trust policy allow-dmz-to-trust then permit
+set security policies from-zone trust to-zone untrust policy allow-trust-to-internet match source-address USER_NET destination-address INTERNET application junos-http
+set security policies from-zone trust to-zone untrust policy allow-trust-to-internet then permit
+set security policies from-zone trust to-zone untrust policy allow-trust-to-internet-https match source-address USER_NET destination-address INTERNET application junos-https
+set security policies from-zone trust to-zone untrust policy allow-trust-to-internet-https then permit
+set security policies from-zone management to-zone trust policy allow-mgmt-to-trust match source-address MGMT_NET destination-address USER_NET application any
+set security policies from-zone management to-zone trust policy allow-mgmt-to-trust then permit
+set security policies from-zone untrust to-zone trust policy deny-untrust-to-trust match source-address INTERNET destination-address USER_NET application any
+set security policies from-zone untrust to-zone trust policy deny-untrust-to-trust then deny
+set security policies from-zone untrust to-zone dmz policy allow-untrust-to-dmz match source-address INTERNET destination-address DMZ_NET application junos-http
+set security policies from-zone untrust to-zone dmz policy allow-untrust-to-dmz then permit
+set security policies from-zone untrust to-zone management policy deny-untrust-to-mgmt match source-address INTERNET destination-address MGMT_NET application any
+set security policies from-zone untrust to-zone management policy deny-untrust-to-mgmt then deny
+set security policies default-policy deny-all
+set security flow tcp-mss ipsec-vpn mss 1350
+set security flow syn-flood-protection alarm-threshold 5000
+set security flow syn-flood-protection attack-threshold 4000
+set security flow syn-flood-protection source-threshold 2000
+set security flow syn-flood-protection destination-threshold 2000
+set security log mode stream
+set security log stream securitylog format syslog
+set security log stream securitylog host 192.0.2.100
+set security log stream securitylog severity info
+set security log stream securitylog category policy
+set security log stream securitylog category attack
+set security log stream securitylog category traffic
+set system login password format sha512
+set system login password minimum-length 12
+set system login password minimum-changes 5
+set system login password minimum-character-changes 3
+set system login password history-size 10
+set system login password expiration 90
+set system login password no-change-interval 1
+set system login password complexity lower-case
+set system login password complexity upper-case
+set system login password complexity numeric
+set system login password complexity special
+set system services ssh max-sessions-per-connection 2
+set system services ssh max-pre-authentication-packets 10
+set system services ssh max-auth-tries 3
+set system services ssh idle-timeout 600
+set system services ssh login-grace-time 60
+set system services ssh key-exchange dh-group14-sha1
+set system services ssh key-exchange dh-group-exchange-sha256
+set system services ssh hostkey-algorithm ssh-rsa
+set system services ssh hostkey-algorithm ssh-ed25519
+set system services ssh fingerprint-hash sha256
+set system services ssh allow-root-login no
+set system services ssh authentication-order password publickey
+set system services ssh client-alive-interval 60
+set system services ssh client-alive-count-max 3
+
+! ===== END SECTION =====
+
+! ===== SECTION: Interface Configuration =====
+
+set interfaces ge-0/0/0 description "Uplink to Internet"
+set interfaces ge-0/0/0 unit 0 family inet address 203.0.113.2/30
+set interfaces ge-0/0/1 description "Uplink to Core Switch"
+set interfaces ge-0/0/1 unit 0 family inet address 10.10.1.1/30
+set interfaces ge-0/0/2 description "User VLAN trunk"
+set interfaces ge-0/0/2 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/0/2 unit 0 family ethernet-switching vlan members [ users servers management dmz ]
+set interfaces ge-0/0/3 description "Server VLAN trunk"
+set interfaces ge-0/0/3 unit 0 family ethernet-switching port-mode trunk
+set interfaces ge-0/0/3 unit 0 family ethernet-switching vlan members [ servers management ]
+set interfaces ge-0/0/4 description "Access port - User"
+set interfaces ge-0/0/4 unit 0 family ethernet-switching port-mode access
+set interfaces ge-0/0/4 unit 0 family ethernet-switching vlan members users
+set interfaces ge-0/0/5 description "Access port - Server"
+set interfaces ge-0/0/5 unit 0 family ethernet-switching port-mode access
+set interfaces ge-0/0/5 unit 0 family ethernet-switching vlan members servers
+set interfaces ge-0/0/6 description "Access port - DMZ"
+set interfaces ge-0/0/6 unit 0 family ethernet-switching port-mode access
+set interfaces ge-0/0/6 unit 0 family ethernet-switching vlan members dmz
+set interfaces ge-0/0/7 description "Access port - Management"
+set interfaces ge-0/0/7 unit 0 family ethernet-switching port-mode access
+set interfaces ge-0/0/7 unit 0 family ethernet-switching vlan members management
+set interfaces lo0 unit 0 family inet address 10.10.255.1/32
+set interfaces vlan unit 10 family inet address 10.10.10.1/24
+set interfaces vlan unit 20 family inet address 10.10.20.1/24
+set interfaces vlan unit 30 family inet address 10.10.30.1/24
+set interfaces vlan unit 40 family inet address 10.10.40.1/24
+set interfaces vlan unit 50 family inet address 10.10.50.1/24
+set interfaces vlan unit 99 family inet address 10.10.99.1/24
+set interfaces ge-0/0/2 unit 0 family ethernet-switching storm-control level 80
+set interfaces ge-0/0/3 unit 0 family ethernet-switching storm-control level 80
+set interfaces ge-0/0/4 unit 0 family ethernet-switching storm-control level 80
+set interfaces ge-0/0/5 unit 0 family ethernet-switching storm-control level 80
+set interfaces ge-0/0/6 unit 0 family ethernet-switching storm-control level 80
+set interfaces ge-0/0/7 unit 0 family ethernet-switching storm-control level 80
+set interfaces ge-0/0/2 unit 0 family ethernet-switching storm-control action shutdown
+set interfaces ge-0/0/3 unit 0 family ethernet-switching storm-control action shutdown
+set interfaces ge-0/0/4 unit 0 family ethernet-switching storm-control action shutdown
+set interfaces ge-0/0/5 unit 0 family ethernet-switching storm-control action shutdown
+set interfaces ge-0/0/6 unit 0 family ethernet-switching storm-control action shutdown
+set interfaces ge-0/0/7 unit 0 family ethernet-switching storm-control action shutdown
+set interfaces ge-0/0/2 unit 0 family ethernet-switching bpdu-block disable
+set interfaces ge-0/0/3 unit 0 family ethernet-switching bpdu-block disable
+set interfaces ge-0/0/4 unit 0 family ethernet-switching bpdu-block enable
+set interfaces ge-0/0/5 unit 0 family ethernet-switching bpdu-block enable
+set interfaces ge-0/0/6 unit 0 family ethernet-switching bpdu-block enable
+set interfaces ge-0/0/7 unit 0 family ethernet-switching bpdu-block enable
+
+! ===== END SECTION =====
+
+! ===== SECTION: Routing & Switching =====
+
+set vlans users vlan-id 10
+set vlans users l3-interface vlan.10
+set vlans servers vlan-id 20
+set vlans servers l3-interface vlan.20
+set vlans management vlan-id 99
+set vlans management l3-interface vlan.99
+set vlans dmz vlan-id 50
+set vlans dmz l3-interface vlan.50
+set vlans printers vlan-id 30
+set vlans printers l3-interface vlan.30
+set vlans voice vlan-id 40
+set vlans voice l3-interface vlan.40
+set protocols rstp interface ge-0/0/2
+set protocols rstp interface ge-0/0/3
+set protocols rstp interface ge-0/0/4
+set protocols rstp interface ge-0/0/5
+set protocols rstp interface ge-0/0/6
+set protocols rstp interface ge-0/0/7
+set protocols rstp interface vlan.10
+set protocols rstp interface vlan.20
+set protocols rstp interface vlan.30
+set protocols rstp interface vlan.40
+set protocols rstp interface vlan.50
+set protocols rstp interface vlan.99
+set protocols ospf area 0.0.0.0 interface vlan.10
+set protocols ospf area 0.0.0.0 interface vlan.20
+set protocols ospf area 0.0.0.0 interface vlan.30
+set protocols ospf area 0.0.0.0 interface vlan.40
+set protocols ospf area 0.0.0.0 interface vlan.50
+set protocols ospf area 0.0.0.0 interface vlan.99
+set protocols ospf area 0.0.0.0 interface lo0.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/1.0
+set protocols ospf area 0.0.0.0 interface ge-0/0/2.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/3.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/4.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/5.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/6.0 passive
+set protocols ospf area 0.0.0.0 interface ge-0/0/7.0 passive
+set protocols ospf area 0.0.0.0 interface vlan.10 passive
+set protocols ospf area 0.0.0.0 interface vlan.20 passive
+set protocols ospf area 0.0.0.0 interface vlan.30 passive
+set protocols ospf area 0.0.0.0 interface vlan.40 passive
+set protocols ospf area 0.0.0.0 interface vlan.50 passive
+set protocols ospf area 0.0.0.0 interface vlan.99 passive
+set protocols ospf area 0.0.0.
